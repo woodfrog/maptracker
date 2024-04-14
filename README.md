@@ -13,8 +13,10 @@
 
 
 
+https://github.com/woodfrog/maptracker/assets/13405255/1c0e072a-cb77-4000-b81b-5b9fd40f8f39
 
-https://github.com/woodfrog/maptracker_mock/assets/13405255/862d4be4-b8ff-4a0c-8439-176fbc92968c
+
+
 
 This repository provides the official implementation of the paper [MapTracker: Tracking with Strided Memory Fusion for Consistent Vector HD Mapping](https://arxiv.org/abs/2403.15951). MapTracker reconstructs temporally consistent vector HD maps, and the local maps can be progressively merged into a global reconstruction.
 
