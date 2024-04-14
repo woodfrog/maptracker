@@ -75,7 +75,7 @@ Set up the ``load_from=...`` properly in the config file to load the checkpoint 
 ### Global merged reconstruction (merged from local HD maps)
 
 ```bash
-python tools/visualization/teaser_vis.py [path to method configuration file under plugin/configs] \
+python tools/visualization/vis_global.py [path to method configuration file under plugin/configs] \
   --data_path [path to the .pkl file] \
   --out_dir [path to the output folder] \
   --option [vis-pred / vis-gt: visualize predicted vectors / visualize ground truth vectors] \
@@ -87,13 +87,13 @@ Set the ``--per_frame_result`` to 1 to generate the per-frame video, the visuali
 Examples:
 ```bash
 # Visualize MapTracker's prediction
-python tools/visualization/teaser_vis.py plugin/configs/maptracker/nuscenes_oldsplit/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py \
+python tools/visualization/vis_global.py plugin/configs/maptracker/nuscenes_oldsplit/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py \
 --data_path work_dirs/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune/pos_predictions.pkl \
 --out_dir vis_global/nuscenes_old/maptracker \
 --option vis-pred  --per_frame_result 1
 
 # Visualize groud truth data
-python tools/visualization/teaser_vis.py plugin/configs/maptracker/nuscenes_oldsplit/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py \
+python tools/visualization/vis_global.py plugin/configs/maptracker/nuscenes_oldsplit/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py \
 --data_path datasets/nuscenes/nuscenes_map_infos_val_gt_tracks.pkl \
 --out_dir vis_global/nuscenes_old/gt  \
 --option vis-gt --per_frame_result 0
@@ -103,7 +103,7 @@ python tools/visualization/teaser_vis.py plugin/configs/maptracker/nuscenes_olds
 ### Local HD map reconstruction
 
 ```bash
-python tools/visualization/teaser_vis_per_frame.py [path to method configuration file under plugin/configs] \
+python tools/visualization/vis_per_frame.py [path to method configuration file under plugin/configs] \
   --data_path [path to the .pkl file] \
   --out_dir [path to the data folder] \
   --option [vis-pred / vis-gt: visualize predicted vectors / visualize ground truth vectors and input video streams]
@@ -115,13 +115,13 @@ Note that the input perspective-view videos will be saved when generating the gr
 Examples:
 ```bash
 # Visualize MapTracker's prediction
-python tools/visualization/teaser_vis_per_frame.py plugin/configs/maptracker/nuscenes_oldsplit/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py \
+python tools/visualization/vis_per_frame.py plugin/configs/maptracker/nuscenes_oldsplit/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py \
 --data_path work_dirs/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune/pos_predictions.pkl \
 --out_dir vis_local/nuscenes_old/maptracker \
 --option vis-pred
 
 # Visualize groud truth data
-python tools/visualization/teaser_vis_per_frame.py plugin/configs/maptracker/nuscenes_oldsplit/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py \
+python tools/visualization/vis_per_frame.py plugin/configs/maptracker/nuscenes_oldsplit/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py \
 --data_path datasets/nuscenes/nuscenes_map_infos_val_gt_tracks.pkl \
 --out_dir vis_local/nuscenes_old/gt  \
 --option vis-gt

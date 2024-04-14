@@ -413,14 +413,6 @@ data = dict(
         interval=4,
         eval_semantic=True,
     ),
-    #shuffler_sampler=dict(
-    #    type='InfiniteGroupEachSampleInBatchSampler',
-    #    seq_split_num=2,
-    #    num_iters_to_seq=num_epochs_single_frame*num_iters_per_epoch,
-    #    random_drop=0.0
-    #),
-    #TODO: may need to check the group sampler later for multi-gpu case.
-    # Work on the single-gpu case first
     shuffler_sampler=dict(type='DistributedGroupSampler'),
     nonshuffler_sampler=dict(type='DistributedSampler')
 )

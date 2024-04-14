@@ -463,8 +463,6 @@ class MapTransformer(Transformer):
         if memory_query is not None:
             memory_query = memory_query.permute(1, 0, 2)
 
-        #TODO: check how it prepares the prop queries...
-        
         inter_states, inter_references = self.decoder(
             query=query,
             key=None,

@@ -1370,10 +1370,10 @@ def main():
 
     # load the GT data
     if args.option == "vis-gt": 
-        data = mmcv.load(args.result_path)
+        data = mmcv.load(args.data_path)
     # load the prediction data
     elif args.option == "vis-pred":
-        with open(args.result_path,'rb') as fp:
+        with open(args.data_path,'rb') as fp:
             data = pickle.load(fp)
 
     all_scene_names = sorted(list(scene_name2idx.keys()))
