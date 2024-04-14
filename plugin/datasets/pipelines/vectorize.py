@@ -3,7 +3,6 @@ from mmdet.datasets.builder import PIPELINES
 from shapely.geometry import LineString
 from numpy.typing import NDArray
 from typing import List, Tuple, Union, Dict
-from IPython import embed
 
 @PIPELINES.register_module(force=True)
 class VectorizeMap(object):

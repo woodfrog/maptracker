@@ -9,9 +9,8 @@ from pathlib import Path
 from os import path as osp
 import os
 from av2.datasets.sensor.av2_sensor_dataloader import AV2SensorDataLoader
-from tqdm import tqdm
 import argparse
-from IPython import embed
+
 
 CAM_NAMES = ['ring_front_center', 'ring_front_right', 'ring_front_left',
     'ring_rear_right','ring_rear_left', 'ring_side_right', 'ring_side_left',

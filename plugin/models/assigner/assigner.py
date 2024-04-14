@@ -133,8 +133,7 @@ class HungarianLinesAssigner(BaseAssigner):
             matched_row_inds, matched_col_inds = linear_sum_assignment(cost)
         except:
             print('cost max{}, min{}'.format(cost.max(), cost.min()))
-            from IPython import embed
-            embed()
+            import pdb; pdb.set_trace()
 
         matched_row_inds = torch.from_numpy(matched_row_inds).to(
             preds['lines'].device)

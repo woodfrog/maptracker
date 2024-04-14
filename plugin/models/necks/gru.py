@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from IPython import embed
 from mmdet.models import NECKS
 from mmcv.cnn.utils import kaiming_init, constant_init
 

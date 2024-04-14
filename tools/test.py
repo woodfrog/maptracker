@@ -16,7 +16,7 @@ from mmdet3d.models import build_model
 # from mmdet_test import multi_gpu_test
 from mmdet_train import set_random_seed
 from mmdet.datasets import replace_ImageToTensor
-from IPython import embed
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
