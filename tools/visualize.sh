@@ -1,0 +1,4 @@
+NUM=50
+
+python tools/visualization/visualize.py plugin/configs/nusc_oldsplit_motr_480_60x30_5frames_seg_warmup_vector_double_mem_span10.py $NUM --result work_dirs/nusc_oldsplit_motr_480_60x30_5frames_seg_warmup_vector_double_mem_span10/submission_vector.json  --out-dir viz/temporal_seg_5frame_warmup_double_mem_span10
+
