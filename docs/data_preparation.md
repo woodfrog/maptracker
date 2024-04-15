@@ -20,7 +20,7 @@ Add ``--newsplit`` to generate the metadata for the new split (geographical-base
 **Step 3.** Generate the tracking ground truth by 
 
 ```
-python tools/tracking/prepare_gt_tracks.py plugin/configs/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py  --out-dir tracking_gts/nuscenes --visualize
+python tools/tracking/prepare_gt_tracks.py plugin/configs/maptracker/nuscenes_oldsplit/maptracker_nusc_oldsplit_5frame_span10_stage3_joint_finetune.py  --out-dir tracking_gts/nuscenes --visualize
 ```
 
 Add the ``--visualize`` flag to visualize the data with element IDs derived from our track generation process, or remove it to save disk memory.  
@@ -41,7 +41,7 @@ python tools/data_converter/argoverse_converter.py --data-root ./datasets/av2
 **Step 3.** Generate the tracking ground truth by 
 
 ```
-python tools/tracking/prepare_gt_tracks.py plugin/configs/maptracker_av2_oldsplit_5frame_span10_stage3_joint_finetune.py  --out-dir tracking_gts/av2 --visualize
+python tools/tracking/prepare_gt_tracks.py plugin/configs/maptracker/av2_oldsplit/maptracker_av2_oldsplit_5frame_span10_stage3_joint_finetune.py  --out-dir tracking_gts/av2 --visualize
 ```
 
 
