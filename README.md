@@ -3,7 +3,7 @@
 
 
 
-### [Jiacheng Chen*<sup>1</sup>](https://jcchen.me) , [Yuefan Wu*<sup>1</sup>](https://ivenwu.com/) , [Jiaqi Tan*<sup>1</sup>](https://christinatan0704.github.io/mysite/), [Hang Ma<sup>1</sup>](https://www.cs.sfu.ca/~hangma/), [Yasutaka Furukawa<sup>1,2</sup>](https://www2.cs.sfu.ca/~furukawa/)
+### [Jiacheng Chen*<sup>1</sup>](https://jcchen.me) , [Yuefan Wu*<sup>1</sup>](https://ivenwu.com/) , [Jiaqi Tan*<sup>1</sup>](https://www.linkedin.com/in/jiaqi-christina-tan-800697158/), [Hang Ma<sup>1</sup>](https://www.cs.sfu.ca/~hangma/), [Yasutaka Furukawa<sup>1,2</sup>](https://www2.cs.sfu.ca/~furukawa/)
 
 ### <sup>1</sup> Simon Fraser University <sup>2</sup> Wayve
 
