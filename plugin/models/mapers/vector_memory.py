@@ -63,7 +63,7 @@ class VectorInstanceMemory(nn.Module):
         self.mem_select_dist_ranges = mem_select_dist_ranges
 
         p_enc_1d = PositionalEncoding1D(dim_in)
-        fake_tensor = torch.zeros((1, 100, dim_in)) # suppose all sequences are shorter than 100
+        fake_tensor = torch.zeros((1, 1000, dim_in)) # suppose all sequences are shorter than 1000
         self.cached_pe = p_enc_1d(fake_tensor)[0]
 
         for p in self.parameters():
