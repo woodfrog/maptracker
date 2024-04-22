@@ -50,7 +50,7 @@ class AV2Dataset(BaseMapDataset):
 
         if 'newsplit' not in ann_file:
             if 'val' in ann_file:
-                # For the old split, we make sure that the test set matches exactly with the MapTR codebase
+                # For the old split testing, we make sure that the test set matches exactly with the MapTR codebase
                 # NOTE: simply sort&sampling will produce slightly different results compared to MapTR's samples
                 # so we have to directly use the saved meta information from MapTR codebase to get the samples
                 maptr_meta_path = os.path.join(os.path.dirname(ann_file), 'maptrv2_val_samples_info.pkl')
@@ -64,8 +64,8 @@ class AV2Dataset(BaseMapDataset):
 
                 samples = [unique_token2samples[x] for x in maptr_unique_tokens]
             else:
-                # For the old split, we follow MapTR's data loading, which
-                # sorts the samples based on the token
+                # For the old split training, we follow MapTR's data loading, which
+                # sorts the samples based on the token, then do sub-sampling
                 samples = list(sorted(samples, key=lambda e: e['token']))
                 samples = samples[::self.interval]
         else:
