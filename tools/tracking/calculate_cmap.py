@@ -334,7 +334,13 @@ def main():
     roi_size = torch.tensor(cfg.roi_size).numpy()
     origin = torch.tensor(cfg.pc_range[:2]).numpy()
 
-    thresholds_list = [0.5,1.0,1.5]
+    if roi_size[0] == 60:
+        thresholds_list = [0.5,1.0,1.5]
+    elif roi_size[0] == 100:
+        thresholds_list = [1.0, 1.5, 2.0]
+    else:
+        raise ValueError('roi size {} not supported, check again...'.format(roi_size))
+
     if 'newsplit' in args.result_path:
         gts = get_gts(dataset,new_split=True)
     else:

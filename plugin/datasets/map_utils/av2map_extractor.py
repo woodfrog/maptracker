@@ -392,7 +392,6 @@ class AV2MapExtractor(object):
                      log_id: str, 
                      e2g_translation: NDArray, 
                      e2g_rotation: NDArray,
-                     pc_range=[-30.0, -15.0, -5.0, 30.0, 15.0, 3.0],
                      polygon_ped=True) -> Dict[str, List[Union[LineString, Polygon]]]:
         ''' Extract geometries given `log_id` and ego pose.
         
@@ -410,8 +409,8 @@ class AV2MapExtractor(object):
 
         avm = self.id2map[log_id]
         
-        patch_h = pc_range[4]-pc_range[1]
-        patch_w = pc_range[3]-pc_range[0]
+        patch_h = self.roi_size[1]
+        patch_w = self.roi_size[0]
         patch_size = (patch_h, patch_w)
         map_pose = e2g_translation[:2]
         rotation = Quaternion._from_matrix(e2g_rotation)
