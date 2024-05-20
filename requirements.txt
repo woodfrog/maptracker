@@ -6,3 +6,4 @@ numba==0.53.0
 Shapely==1.8.5
 yapf==0.40.1
 setuptools==59.5.0
+imageio-ffmpeg==0.4.9
