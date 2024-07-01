@@ -1,13 +1,15 @@
 <div align="center">
-<h1 align="center"> MapTracker: Tracking with Strided Memory Fusion for <br/> Consistent Vector HD Mapping </h1>
+<h2 align="center"> MapTracker: Tracking with Strided Memory Fusion for <br/> Consistent Vector HD Mapping </h1>
+
+<h4 align="center"> ECCV 2024 </h4>
 
 
+[Jiacheng Chen*<sup>1</sup>](https://jcchen.me) , [Yuefan Wu*<sup>1</sup>](https://ivenwu.com/) , [Jiaqi Tan*<sup>1</sup>](https://www.linkedin.com/in/jiaqi-christina-tan-800697158/), [Hang Ma<sup>1</sup>](https://www.cs.sfu.ca/~hangma/), [Yasutaka Furukawa<sup>1,2</sup>](https://www2.cs.sfu.ca/~furukawa/)
 
-### [Jiacheng Chen*<sup>1</sup>](https://jcchen.me) , [Yuefan Wu*<sup>1</sup>](https://ivenwu.com/) , [Jiaqi Tan*<sup>1</sup>](https://www.linkedin.com/in/jiaqi-christina-tan-800697158/), [Hang Ma<sup>1</sup>](https://www.cs.sfu.ca/~hangma/), [Yasutaka Furukawa<sup>1,2</sup>](https://www2.cs.sfu.ca/~furukawa/)
+<sup>1</sup> Simon Fraser University <sup>2</sup> Wayve
 
-### <sup>1</sup> Simon Fraser University <sup>2</sup> Wayve
 
-### [arXiv](https://arxiv.org/abs/2403.15951), [Project page](https://map-tracker.github.io/)
+([arXiv](https://arxiv.org/abs/2403.15951), [Project page](https://map-tracker.github.io/))
 
 </div>
 
