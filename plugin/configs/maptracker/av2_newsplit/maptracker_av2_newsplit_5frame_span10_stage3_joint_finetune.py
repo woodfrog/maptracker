@@ -20,7 +20,7 @@ num_cams = 7
 
 num_gpus = 8
 batch_size = 2
-num_iters_per_epoch = 27243 // (num_gpus * batch_size)
+num_iters_per_epoch = 29293 // (num_gpus * batch_size)
 num_epochs = 20
 num_epochs_interval = num_epochs // 5
 total_iters = num_epochs * num_iters_per_epoch

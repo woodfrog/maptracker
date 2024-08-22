@@ -19,7 +19,7 @@ img_size = (img_h, img_w)
 
 num_gpus = 8
 batch_size = 6
-num_iters_per_epoch = 27846 // (num_gpus * batch_size)
+num_iters_per_epoch = 27968 // (num_gpus * batch_size)
 num_epochs = 4
 num_epochs_interval = num_epochs
 total_iters = num_epochs * num_iters_per_epoch

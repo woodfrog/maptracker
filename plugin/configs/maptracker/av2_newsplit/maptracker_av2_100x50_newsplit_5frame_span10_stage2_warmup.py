@@ -13,16 +13,16 @@ plugin_dir = 'plugin/'
 img_norm_cfg = dict(
     mean=[103.530, 116.280, 123.675], std=[1.0, 1.0, 1.0], to_rgb=False)
 
-img_h = 480
-img_w = 800
+img_h = 608
+img_w = 608
 img_size = (img_h, img_w)
-num_cams = 6
+num_cams = 7
 
 num_gpus = 8
-batch_size = 1
-num_iters_per_epoch = 27968 // (num_gpus * batch_size)
-num_epochs = 18
-num_epochs_interval = num_epochs // 6
+batch_size = 6
+num_iters_per_epoch = 29293 // (num_gpus * batch_size)
+num_epochs = 3
+num_epochs_interval = num_epochs
 total_iters = num_epochs * num_iters_per_epoch
 num_queries = 100
 
@@ -35,7 +35,7 @@ cat2id = {
 num_class = max(list(cat2id.values())) + 1
 
 # bev configs
-roi_size = (60, 30) # bev range, 60m in x-axis, 30m in y-axis
+roi_size = (100, 50) # bev range, 100m in x-axis, 50m in y-axis
 bev_h = 50
 bev_w = 100
 pc_range = [-roi_size[0]/2, -roi_size[1]/2, -3, roi_size[0]/2, roi_size[1]/2, 5]
@@ -76,10 +76,10 @@ model = dict(
     history_steps=4,
     test_time_history_steps=20,
     mem_select_dist_ranges=[1, 5, 10, 15],
-    skip_vector_head=True,
-    freeze_bev=False,
+    skip_vector_head=False,
+    freeze_bev=True,
     track_fp_aug=False,
-    use_memory=False,
+    use_memory=True,
     mem_len=4,
     mem_warmup_iters=500,
     backbone_cfg=dict(
@@ -116,6 +116,7 @@ model = dict(
         transformer=dict(
             type='PerceptionTransformer',
             embed_dims=bev_embed_dims,
+            num_cams=num_cams,
             encoder=dict(
                 type='BEVFormerEncoder',
                 num_layers=2,
@@ -136,7 +137,9 @@ model = dict(
                                 embed_dims=bev_embed_dims,
                                 num_points=8,
                                 num_levels=num_feat_levels),
-                            embed_dims=bev_embed_dims),
+                            embed_dims=bev_embed_dims,
+                            num_cams=num_cams,
+                        ),
                     ],
                     feedforward_channels=bev_embed_dims*2,
                     ffn_dropout=0.1,
@@ -215,8 +218,6 @@ model = dict(
                     ),
                     feedforward_channels=embed_dims*2,
                     ffn_dropout=0.1,
-                    # operation_order=('norm', 'self_attn', 'norm', 'cross_attn',
-                    #                 'norm', 'ffn',)
                     operation_order=('self_attn', 'norm', 'cross_attn', 'norm', 'cross_attn', 'norm',
                                     'ffn', 'norm')
                 )
@@ -289,8 +290,16 @@ train_pipeline = [
          ),
     dict(type='Normalize3D', **img_norm_cfg),
     dict(type='PadMultiViewImages', size_divisor=32),
+    dict(type='PV_Map', img_shape=img_size, 
+        feat_down_sample=8,
+        thickness=1, 
+        coords_dim=coords_dim,
+        pv_mask=True,
+        num_cams=num_cams,
+        num_coords=3,
+    ),
     dict(type='FormatBundleMap'),
-    dict(type='Collect3D', keys=['img', 'vectors', 'semantic_mask'], meta_keys=(
+    dict(type='Collect3D', keys=['img', 'vectors', 'semantic_mask', 'pv_mask'], meta_keys=(
         'token', 'ego2img', 'sample_idx', 'ego2global_translation',
         'ego2global_rotation', 'img_shape', 'scene_name'))
 ]
@@ -305,7 +314,7 @@ test_pipeline = [
     dict(type='Normalize3D', **img_norm_cfg),
     dict(type='PadMultiViewImages', size_divisor=32),
     dict(type='FormatBundleMap'),
-    dict(type='Collect3D', keys=['img'], meta_keys=(
+    dict(type='Collect3D', keys=['img',], meta_keys=(
         'token', 'ego2img', 'sample_idx', 'ego2global_translation',
         'ego2global_rotation', 'img_shape', 'scene_name'))
 ]
@@ -313,9 +322,8 @@ test_pipeline = [
 # configs for evaluation code
 # DO NOT CHANGE
 eval_config = dict(
-    type='NuscDataset',
-    data_root='./datasets/nuscenes',
-    ann_file='./datasets/nuscenes/nuscenes_map_infos_val.pkl',
+    type='AV2Dataset',
+    ann_file='./datasets/av2/av2_map_infos_val_newsplit.pkl',
     meta=meta,
     roi_size=roi_size,
     cat2id=cat2id,
@@ -327,26 +335,17 @@ eval_config = dict(
             normalize=False,
             roi_size=roi_size
         ),
-        dict(
-            type='RasterizeMap',   
-            roi_size=roi_size,
-            coords_dim=coords_dim,
-            canvas_size=canvas_size,
-            thickness=thickness,
-            semantic_mask=True,
-        ),
         dict(type='FormatBundleMap'),
-        dict(type='Collect3D', keys=['vectors', 'semantic_mask'], meta_keys=['token', 'ego2img', 'sample_idx', 'ego2global_translation',
+        dict(type='Collect3D', keys=['vectors',], meta_keys=['token', 'ego2img', 'sample_idx', 'ego2global_translation',
         'ego2global_rotation', 'img_shape', 'scene_name'])
     ],
-    interval=1,
+    interval=4,
 )
 
 
 match_config = dict(
-    type='NuscDataset',
-    data_root='./datasets/nuscenes',
-    ann_file='./datasets/nuscenes/nuscenes_map_infos_val.pkl',
+    type='AV2Dataset',
+    ann_file='./datasets/av2/av2_map_infos_val_newsplit.pkl',
     meta=meta,
     roi_size=roi_size,
     cat2id=cat2id,
@@ -367,11 +366,10 @@ match_config = dict(
             thickness=thickness,
         ),
         dict(type='FormatBundleMap'),
-        dict(type='Collect3D', keys=['vectors', 'semantic_mask'], meta_keys=['token', 'ego2img', 'ego2cam', 'sample_idx', 'ego2global_translation',
-        'ego2global_rotation', 'img_shape', 'scene_name', 'img_filenames', 'cam_intrinsics', 'cam_extrinsics', 'lidar2ego_translation', 
-        'lidar2ego_rotation'])
+        dict(type='Collect3D', keys=['vectors', 'semantic_mask'], meta_keys=['token', 'ego2img', 'sample_idx', 'ego2global_translation',
+        'ego2global_rotation', 'img_shape', 'scene_name'])
     ],
-    interval=1,
+    interval=4,
 )
 
 # dataset configs
@@ -379,9 +377,8 @@ data = dict(
     samples_per_gpu=batch_size,
     workers_per_gpu=8,
     train=dict(
-        type='NuscDataset',
-        data_root='./datasets/nuscenes',
-        ann_file='./datasets/nuscenes/nuscenes_map_infos_train.pkl',
+        type='AV2Dataset',
+        ann_file='./datasets/av2/av2_map_infos_train_newsplit.pkl',
         meta=meta,
         roi_size=roi_size,
         cat2id=cat2id,
@@ -389,12 +386,11 @@ data = dict(
         seq_split_num=-2,
         matching=True,
         multi_frame=5,
-        sampling_span=10,
+        interval=4,
     ),
     val=dict(
-        type='NuscDataset',
-        data_root='./datasets/nuscenes',
-        ann_file='./datasets/nuscenes/nuscenes_map_infos_val.pkl',
+        type='AV2Dataset',
+        ann_file='./datasets/av2/av2_map_infos_val_newsplit.pkl',
         meta=meta,
         roi_size=roi_size,
         cat2id=cat2id,
@@ -402,12 +398,11 @@ data = dict(
         eval_config=eval_config,
         test_mode=True,
         seq_split_num=1,
-        eval_semantic=True,
+        interval=4,
     ),
     test=dict(
-        type='NuscDataset',
-        data_root='./datasets/nuscenes',
-        ann_file='./datasets/nuscenes/nuscenes_map_infos_val.pkl',
+        type='AV2Dataset',
+        ann_file='./datasets/av2/av2_map_infos_val_newsplit.pkl',
         meta=meta,
         roi_size=roi_size,
         cat2id=cat2id,
@@ -415,7 +410,7 @@ data = dict(
         eval_config=eval_config,
         test_mode=True,
         seq_split_num=1,
-        eval_semantic=True,
+        interval=4,
     ),
     shuffler_sampler=dict(type='DistributedGroupSampler'),
     nonshuffler_sampler=dict(type='DistributedSampler')
@@ -438,7 +433,7 @@ lr_config = dict(
     warmup='linear',
     warmup_iters=500,
     warmup_ratio=1.0 / 3,
-    min_lr_ratio=5e-2)
+    min_lr_ratio=0.95)
 
 evaluation = dict(interval=num_epochs_interval*num_iters_per_epoch)
 #evaluation = dict(interval=1) # for debugging use..
@@ -456,3 +451,5 @@ log_config = dict(
     ])
 
 SyncBN = True
+
+load_from = 'work_dirs/maptracker_av2_100x50_newsplit_5frame_span10_stage1_bev_pretrain/latest.pth'
