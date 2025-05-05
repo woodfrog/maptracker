@@ -272,7 +272,7 @@ class VectorInstanceMemory(nn.Module):
         # 0.08 mean is around 5-degree, 3-sigma is 15-degree
         noise_euler = np.random.randn(*list(rot_euler.shape)) * 0.08
         rot_euler += noise_euler
-        noisy_rot = R.from_euler('zyx', rot_euler)
+        noisy_rot = R.from_euler('zxy', rot_euler)
 
         # error within 0.25 meter
         noise_trans = torch.randn_like(trans) * 0.25
