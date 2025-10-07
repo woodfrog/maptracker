@@ -47,7 +47,7 @@ python tools/tracking/prepare_gt_tracks.py plugin/configs/maptracker/av2_oldspli
 
 ## Checkpoints
 
-We provide the checkpoints at [this link](https://www.dropbox.com/scl/fo/miulg8q9oby7q2x5vemme/ALoxX1HyxGlfR9y3xlqfzeE?rlkey=i3rw4mbq7lacblc7xsnjkik1u&dl=0). Please download and place them as ``./work_dirs/pretrained_ckpts``.
+We provide the checkpoints at [this Dropbox link](https://www.dropbox.com/scl/fo/miulg8q9oby7q2x5vemme/ALoxX1HyxGlfR9y3xlqfzeE?rlkey=i3rw4mbq7lacblc7xsnjkik1u&dl=0) or [this HuggingFace repo](https://huggingface.co/cccjc/maptracker/tree/main). Please download and place them as ``./work_dirs/pretrained_ckpts``.
 
 
 ## File structures
