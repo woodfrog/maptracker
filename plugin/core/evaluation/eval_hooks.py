@@ -5,6 +5,7 @@
 
 import bisect
 import os.path as osp
+from datetime import timedelta
 
 import mmcv
 import torch.distributed as dist
@@ -31,6 +32,7 @@ class CustomDistEvalHook(BaseDistEvalHook):
     def __init__(self, *args, dynamic_intervals=None,  **kwargs):
         super(CustomDistEvalHook, self).__init__(*args, **kwargs)
         self.use_dynamic_intervals = dynamic_intervals is not None
+        self._post_eval_barrier_group = None
         if self.use_dynamic_intervals:
             self.dynamic_milestones, self.dynamic_intervals = \
                 _calc_dynamic_intervals(self.interval, dynamic_intervals)
@@ -50,6 +52,19 @@ class CustomDistEvalHook(BaseDistEvalHook):
     def before_train_iter(self, runner):
         self._decide_interval(runner)
         super().before_train_iter(runner)
+
+    def _sync_after_evaluate(self):
+        if not (dist.is_available() and dist.is_initialized()):
+            return
+
+        if self._post_eval_barrier_group is None:
+            self._post_eval_barrier_group = dist.new_group(
+                backend='gloo', timeout=timedelta(hours=2))
+
+        dist.monitored_barrier(
+            group=self._post_eval_barrier_group,
+            timeout=timedelta(hours=2),
+            wait_all_ranks=True)
 
     def _do_evaluate(self, runner):
         """perform evaluation and save ckpt."""
@@ -89,4 +104,7 @@ class CustomDistEvalHook(BaseDistEvalHook):
 
             if self.save_best:
                 self._save_ckpt(runner, key_score)
+
+        # Keep all ranks aligned before returning to training.
+        self._sync_after_evaluate()
   

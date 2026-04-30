@@ -81,6 +81,20 @@ model = dict(
     use_memory=True,
     mem_len=4,
     mem_warmup_iters=500,
+    mvp_temporal_gate_cfg=dict(
+        gate_supervision_enabled=True,
+        corruption_probs=dict(clean=0.6, c_full=0.2, c_tail=0.2),
+        stale_offsets=[4, 8],
+        corruption_onset=2,
+        c_tail_keep_recent=1,
+        gate_loss_weights=dict(lambda_close=1.0, lambda_open=0.5, lambda_clean=0.1),
+        enable_clean_open_loss=True,
+        clean_validation_only=False,
+        run_contradiction_suite=False,
+        corruption_trained_no_gate_baseline=False,
+        freeze_stage='stage2_warmup',
+        unfreeze_stage='stage3_joint_finetune',
+    ),
     backbone_cfg=dict(
         type='BEVFormerBackbone',
         roi_size=roi_size,
@@ -182,6 +196,10 @@ model = dict(
                 return_intermediate=True,
                 transformerlayers=dict(
                     type='MapTransformerLayer',
+                    temporal_gate_cfg=dict(
+                        enabled=False,
+                        hidden_dims=64,
+                    ),
                     attn_cfgs=[
                         dict(
                             type='MultiheadAttention',

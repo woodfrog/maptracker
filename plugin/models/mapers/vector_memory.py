@@ -79,8 +79,16 @@ class VectorInstanceMemory(nn.Module):
         self.mem_bank_trans = torch.zeros((self.bank_size, bs,  3),dtype=torch.float32).cuda()
         self.mem_bank_rot = torch.zeros((self.bank_size, bs, 3, 3),dtype=torch.float32).cuda()
         self.batch_mem_embeds_dict = {}
+        self.batch_mem_clean_embeds_dict = {}
+        self.batch_mem_corrupt_mode_dict = {}
         self.batch_mem_relative_pe_dict = {}
         self.batch_key_padding_dict = {}
+        self.batch_valid_mem_dict = {}
+        self.batch_delta_t_int_dict = {}
+        self.batch_age_rank_norm_dict = {}
+        self.batch_slot_corrupt_mask_dict = {}
+        self.batch_slot_corrupt_eligible_dict = {}
+        self.batch_tracked_query_len = {}
         self.curr_rot = torch.zeros((bs,3,3),dtype=torch.float32).cuda()
         self.curr_trans = torch.zeros((bs,3),dtype=torch.float32).cuda()
         self.gt_lines_info = {}
@@ -129,9 +137,9 @@ class VectorInstanceMemory(nn.Module):
                 self.mem_bank[mem_lens_per_ins[ins_idx], batch_i, mem_id] = prev_embeddings[propagated_ids[ins_idx]]
                 self.mem_bank_seq_id[mem_lens_per_ins[ins_idx], batch_i, mem_id] = seq_idx
             else:
-                self.mem_bank[:self.bank_size-1, batch_i, mem_id] = self.mem_bank[1:self.bank_size, batch_i, mem_id]
+                self.mem_bank[:self.bank_size-1, batch_i, mem_id] = self.mem_bank[1:self.bank_size, batch_i, mem_id].clone()
                 self.mem_bank[-1, batch_i, mem_id] = prev_embeddings[propagated_ids[ins_idx]]
-                self.mem_bank_seq_id[:self.bank_size-1, batch_i, mem_id] = self.mem_bank_seq_id[1:self.bank_size, batch_i, mem_id]
+                self.mem_bank_seq_id[:self.bank_size-1, batch_i, mem_id] = self.mem_bank_seq_id[1:self.bank_size, batch_i, mem_id].clone()
                 self.mem_bank_seq_id[-1, batch_i, mem_id] = seq_idx
 
         if self.curr_t < self.bank_size:
@@ -179,8 +187,80 @@ class VectorInstanceMemory(nn.Module):
 
     def clear_dict(self,):
         self.batch_mem_embeds_dict = {}
+        self.batch_mem_clean_embeds_dict = {}
+        self.batch_mem_corrupt_mode_dict = {}
         self.batch_mem_relative_pe_dict = {}
         self.batch_key_padding_dict = {}
+        self.batch_valid_mem_dict = {}
+        self.batch_delta_t_int_dict = {}
+        self.batch_age_rank_norm_dict = {}
+        self.batch_slot_corrupt_mask_dict = {}
+        self.batch_slot_corrupt_eligible_dict = {}
+        self.batch_tracked_query_len = {}
+
+    @staticmethod
+    def _build_local_corrupted_read_view(mem_embeds_clean, canonical_mem_embeds, all_select_indices, key_padding_mask,
+                                         corruption_mode='clean', stale_offset=4, tail_keep_recent=1,
+                                         apply_corruption=True):
+        """Build read-path-only corrupted view and labels.
+
+        Args:
+            mem_embeds_clean (Tensor): [T, N, C] selected clean read bank.
+            canonical_mem_embeds (Tensor): [S, N, C] canonical bank for stale source lookup.
+            all_select_indices (list[Tensor]): per-instance selected canonical bank indices.
+            key_padding_mask (Tensor): [N, T], True means padding.
+            corruption_mode (str): clean/c_full/c_tail.
+            stale_offset (int): stale source offset into older canonical slot.
+            tail_keep_recent (int): num recent valid slots preserved for c_tail.
+            apply_corruption (bool): whether onset policy allows corruption.
+        """
+        mem_embeds_corrupt = mem_embeds_clean.clone()
+        num_slots, num_ins, _ = mem_embeds_clean.shape
+        device = mem_embeds_clean.device
+
+        slot_corrupt_mask = torch.zeros((num_ins, num_slots), dtype=torch.bool, device=device)
+        slot_corrupt_eligible = torch.zeros((num_ins, num_slots), dtype=torch.bool, device=device)
+
+        if (not apply_corruption) or corruption_mode == 'clean':
+            return mem_embeds_corrupt, slot_corrupt_mask, slot_corrupt_eligible
+
+        corruption_mode = corruption_mode.lower()
+        if corruption_mode not in ['c_full', 'c_tail']:
+            return mem_embeds_corrupt, slot_corrupt_mask, slot_corrupt_eligible
+
+        for ins_idx in range(num_ins):
+            selected_indices = torch.as_tensor(
+                all_select_indices[ins_idx], device=device, dtype=torch.long)
+            valid_positions = (~key_padding_mask[ins_idx]).nonzero(as_tuple=False).flatten()
+            valid_len = len(valid_positions)
+            if valid_len == 0:
+                continue
+
+            if corruption_mode == 'c_full':
+                target_positions = valid_positions
+            else:
+                keep_recent = int(max(0, min(tail_keep_recent, valid_len)))
+                target_positions = valid_positions[: max(valid_len - keep_recent, 0)]
+
+            for pos in target_positions.tolist():
+                source_pos = int(selected_indices[pos].item()) - stale_offset
+                if source_pos < 0:
+                    # Missing stale source => unsupervised / ineligible.
+                    continue
+                if source_pos >= canonical_mem_embeds.shape[0]:
+                    continue
+
+                src_local = (selected_indices == source_pos).nonzero(as_tuple=False).flatten()
+                if len(src_local) == 0:
+                    # Missing propagated stale source in selected subset =>
+                    # unsupervised / ineligible for this forward pass.
+                    continue
+
+                mem_embeds_corrupt[pos, ins_idx] = mem_embeds_clean[src_local[0].item(), ins_idx]
+                slot_corrupt_mask[ins_idx, pos] = True
+                slot_corrupt_eligible[ins_idx, pos] = True
+
+        return mem_embeds_corrupt, slot_corrupt_mask, slot_corrupt_eligible
 
     def trans_memory_bank(self, query_prop, b_i, metas):
         seq_id = metas['local_idx']
@@ -229,10 +309,25 @@ class VectorInstanceMemory(nn.Module):
         for ins_i in range(num_track_ins):
             key_padding_mask[:padding_trunc_loc[ins_i], ins_i] = False
         key_padding_mask = key_padding_mask.T
+        valid_mem = ~key_padding_mask
 
         # prepare relative seq idx gap
         relative_seq_idx = torch.zeros_like(mem_embeds[:,:,0]).long()
         relative_seq_idx[:valid_mem_len] = seq_id - mem_seq_ids[:valid_mem_len]
+        delta_t_int = relative_seq_idx.transpose(0, 1).clone()
+
+        age_rank_norm = torch.zeros((num_track_ins, self.mem_len), dtype=torch.float32,
+                                    device=mem_embeds.device)
+        for ins_i in range(num_track_ins):
+            valid_len = int((~key_padding_mask[ins_i]).sum().item())
+            if valid_len <= 0:
+                continue
+            if valid_len == 1:
+                age_rank_norm[ins_i, 0] = 1.0
+            else:
+                age_rank_norm[ins_i, :valid_len] = torch.linspace(
+                    0.0, 1.0, steps=valid_len, device=mem_embeds.device)
+
         relative_seq_pe = self.cached_pe[relative_seq_idx].to(mem_embeds.device)
 
         # prepare relative pose information for each active instance
@@ -263,9 +358,36 @@ class VectorInstanceMemory(nn.Module):
         )
         mem_embeds_new[:valid_mem_len] = rearrange(mem_embeds_prop, '(t n) c -> t n c', t=valid_mem_len)
 
-        self.batch_mem_embeds_dict[b_i] = mem_embeds_new.clone().detach()
+        clean_selected_mem_embeds = mem_embeds_new.clone().detach()
+
+        corruption_mode = str(metas.get('memory_corruption_mode', 'clean')).lower()
+        stale_offset = int(metas.get('memory_stale_offset', 4))
+        tail_keep_recent = int(metas.get('memory_c_tail_keep_recent', 1))
+        onset = metas.get('memory_corruption_onset', None)
+        apply_corruption = True if onset is None else (seq_id >= int(onset))
+
+        corrupt_read_mem_embeds, slot_corrupt_mask, slot_corrupt_eligible = \
+            self._build_local_corrupted_read_view(
+                clean_selected_mem_embeds,
+                self.mem_bank[:, b_i, active_mem_ids].detach(),
+                all_select_indices,
+                key_padding_mask,
+                corruption_mode=corruption_mode,
+                stale_offset=stale_offset,
+                tail_keep_recent=tail_keep_recent,
+                apply_corruption=apply_corruption,
+            )
+
+        self.batch_mem_embeds_dict[b_i] = corrupt_read_mem_embeds
+        self.batch_mem_clean_embeds_dict[b_i] = clean_selected_mem_embeds
+        self.batch_mem_corrupt_mode_dict[b_i] = corruption_mode
         self.batch_mem_relative_pe_dict[b_i] = relative_seq_pe
         self.batch_key_padding_dict[b_i] = key_padding_mask
+        self.batch_valid_mem_dict[b_i] = valid_mem
+        self.batch_delta_t_int_dict[b_i] = delta_t_int
+        self.batch_age_rank_norm_dict[b_i] = age_rank_norm
+        self.batch_slot_corrupt_mask_dict[b_i] = slot_corrupt_mask
+        self.batch_slot_corrupt_eligible_dict[b_i] = slot_corrupt_eligible
     
     def add_noise_to_pose(self, rot, trans):
         rot_euler = rot.as_euler('zxy')

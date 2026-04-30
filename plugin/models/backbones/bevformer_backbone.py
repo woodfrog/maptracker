@@ -91,6 +91,9 @@ class BEVFormerBackbone(nn.Module):
     
         self.positional_encoding = build_positional_encoding(
             positional_encoding)
+        transformer = copy.deepcopy(transformer)
+        if transformer is not None and 'encoder' in transformer and transformer['encoder'] is not None:
+            transformer['encoder']['history_steps'] = history_steps
         self.transformer = build_transformer(transformer)
         self.embed_dims = self.transformer.embed_dims
         

@@ -92,4 +92,4 @@ If you find MapTracker useful in your research or applications, please consider 
 
 ## License
 
-This project is licensed under GPL, see the [license file](LICENSE) for details.
+This project is licensed under GPL, see the [license file](LICENSE) for details. 

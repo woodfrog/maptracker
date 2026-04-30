@@ -77,7 +77,7 @@ class MaskFocalLoss(FocalLoss):
         num_classes = pred.size(1)
         loss = 0
         for index in range(num_classes):
-            loss += self.loss_weight * py_sigmoid_focal_loss(
+            loss += py_sigmoid_focal_loss(
                 pred[:,index],
                 target[:,index],
                 weight,

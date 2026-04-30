@@ -90,6 +90,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+env-maptracker/
 
 # Spyder project settings
 .spyderproject
@@ -110,6 +111,7 @@ data
 .idea
 
 # custom
+core.*
 *.pkl
 *.gif
 *.pkl.json
@@ -156,4 +158,6 @@ mmdetection3d
 work_dirs
 vis_global
 vis_local
+
+logs/
 

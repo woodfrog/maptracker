@@ -221,6 +221,12 @@ def custom_train_detector(model,
             hook = build_from_cfg(hook_cfg, HOOKS)
             runner.register_hook(hook, priority=priority)
 
+    if cfg.get('auto_resume', False) and not cfg.get('resume_from', None):
+        latest_checkpoint = osp.join(cfg.work_dir, 'latest.pth')
+        if osp.isfile(latest_checkpoint):
+            cfg.resume_from = latest_checkpoint
+            logger.info(f'Auto-resume enabled. Resuming from latest checkpoint: {cfg.resume_from}')
+
     if cfg.resume_from:
         runner.resume(cfg.resume_from)
     elif cfg.load_from:

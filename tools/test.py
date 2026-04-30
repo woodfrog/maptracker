@@ -2,6 +2,7 @@ import argparse
 import mmcv
 import os
 import os.path as osp
+import json
 import torch
 import warnings
 from mmcv import Config, DictAction
@@ -86,6 +87,35 @@ def parse_args():
         default='none',
         help='job launcher')
     parser.add_argument('--local_rank', type=int, default=0)
+    parser.add_argument(
+        '--memory-corruption-mode',
+        choices=['clean', 'c_full', 'c_tail'],
+        default=None,
+        help='Force evaluation-time memory corruption mode.')
+    parser.add_argument(
+        '--memory-stale-offset',
+        type=int,
+        default=None,
+        help='Force stale offset for evaluation-time corruption.')
+    parser.add_argument(
+        '--memory-c-tail-keep-recent',
+        type=int,
+        default=None,
+        help='Force c_tail keep_recent setting for evaluation-time corruption.')
+    parser.add_argument(
+        '--memory-corruption-onset',
+        type=int,
+        default=None,
+        help='Force corruption onset frame index during evaluation.')
+    parser.add_argument(
+        '--condition-tag',
+        default=None,
+        help='Optional tag to save alongside outputs for condition bookkeeping.')
+    parser.add_argument(
+        '--dump-alpha-per-frame',
+        action='store_true',
+        default=False,
+        help='Dump per-frame per-slot alpha tensors to alpha_per_frame.pkl in work-dir.')
     args = parser.parse_args()
     if 'LOCAL_RANK' not in os.environ:
         os.environ['LOCAL_RANK'] = str(args.local_rank)
@@ -98,6 +128,71 @@ def parse_args():
         warnings.warn('--options is deprecated in favor of --eval-options')
         args.eval_options = args.options
     return args
+
+
+def apply_eval_corruption_overrides(cfg, args):
+    has_override = any([
+        args.memory_corruption_mode is not None,
+        args.memory_stale_offset is not None,
+        args.memory_c_tail_keep_recent is not None,
+        args.memory_corruption_onset is not None,
+    ])
+    if not has_override and not getattr(args, 'dump_alpha_per_frame', False):
+        return
+
+    if 'model' not in cfg:
+        return
+    mvp_cfg = cfg.model.get('mvp_temporal_gate_cfg', {})
+    if mvp_cfg is None:
+        mvp_cfg = {}
+
+    eval_cfg = dict(mvp_cfg.get('eval_corruption_cfg', {}))
+    if args.memory_corruption_mode is not None:
+        eval_cfg['memory_corruption_mode'] = args.memory_corruption_mode
+    if args.memory_stale_offset is not None:
+        eval_cfg['memory_stale_offset'] = int(args.memory_stale_offset)
+    if args.memory_c_tail_keep_recent is not None:
+        eval_cfg['memory_c_tail_keep_recent'] = int(args.memory_c_tail_keep_recent)
+    if args.memory_corruption_onset is not None:
+        eval_cfg['memory_corruption_onset'] = int(args.memory_corruption_onset)
+    mvp_cfg['eval_corruption_cfg'] = eval_cfg
+    if getattr(args, 'dump_alpha_per_frame', False):
+        mvp_cfg['dump_alpha_per_frame'] = True
+    cfg.model.mvp_temporal_gate_cfg = mvp_cfg
+
+
+def dump_alpha_stats_if_available(outputs, work_dir):
+    alpha_records = []
+    for item in outputs:
+        if isinstance(item, dict) and 'alpha_stats' in item:
+            alpha_records.append(item['alpha_stats'])
+    if not alpha_records:
+        return
+    os.makedirs(work_dir, exist_ok=True)
+    keys = sorted(alpha_records[0].keys())
+    summary = {}
+    for key in keys:
+        values = [float(rec.get(key, 0.0)) for rec in alpha_records]
+        summary[key] = float(sum(values) / max(len(values), 1))
+    alpha_path = osp.join(work_dir, 'alpha_stats.json')
+    with open(alpha_path, 'w') as f:
+        json.dump(summary, f, indent=2)
+
+
+def dump_alpha_per_frame_if_available(outputs, work_dir):
+    """Collect alpha_frame_data from all output dicts and save as alpha_per_frame.pkl."""
+    import pickle
+    records = []
+    for item in outputs:
+        if isinstance(item, dict) and item.get('alpha_frame_data') is not None:
+            records.append(item['alpha_frame_data'])
+    if not records:
+        return
+    os.makedirs(work_dir, exist_ok=True)
+    out_path = osp.join(work_dir, 'alpha_per_frame.pkl')
+    with open(out_path, 'wb') as f:
+        pickle.dump(records, f)
+    print(f'[dump_alpha_per_frame] Saved {len(records)} frame records to {out_path}')
 
 
 def main():
@@ -115,6 +210,7 @@ def main():
     cfg = Config.fromfile(args.config)
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
+    apply_eval_corruption_overrides(cfg, args)
     # import modules from string list.
     if cfg.get('custom_imports', None):
         from mmcv.utils import import_modules_from_strings
@@ -241,6 +337,21 @@ def main():
 
     rank, _ = get_dist_info()
     if rank == 0:
+        if args.condition_tag is not None:
+            os.makedirs(cfg.work_dir, exist_ok=True)
+            condition_meta_path = osp.join(cfg.work_dir, 'condition_meta.json')
+            condition_meta = dict(
+                condition_tag=args.condition_tag,
+                memory_corruption_mode=args.memory_corruption_mode,
+                memory_stale_offset=args.memory_stale_offset,
+                memory_c_tail_keep_recent=args.memory_c_tail_keep_recent,
+                memory_corruption_onset=args.memory_corruption_onset,
+            )
+            with open(condition_meta_path, 'w') as f:
+                json.dump(condition_meta, f, indent=2)
+        dump_alpha_stats_if_available(outputs, cfg.work_dir)
+        if getattr(args, 'dump_alpha_per_frame', False):
+            dump_alpha_per_frame_if_available(outputs, cfg.work_dir)
         kwargs = {} if args.eval_options is None else args.eval_options
         if args.format_only:
             dataset.format_results(outputs, **kwargs)

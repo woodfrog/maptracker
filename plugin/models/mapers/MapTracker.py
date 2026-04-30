@@ -4,6 +4,8 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import random
 
 from mmdet3d.models.builder import (build_backbone, build_head)
 
@@ -41,6 +43,7 @@ class MapTracker(BaseMapper):
                  use_memory=False,
                  mem_len=None,
                  mem_warmup_iters=-1,
+                 mvp_temporal_gate_cfg=None,
                  **kwargs):
         super().__init__()
 
@@ -63,6 +66,28 @@ class MapTracker(BaseMapper):
         self.track_fp_aug = track_fp_aug
         self.use_memory = use_memory
         self.mem_warmup_iters = mem_warmup_iters
+        self.mvp_temporal_gate_cfg = mvp_temporal_gate_cfg or {}
+        self.gate_loss_weights = self.mvp_temporal_gate_cfg.get(
+            'gate_loss_weights', dict(lambda_close=1.0, lambda_open=0.5, lambda_clean=0.1))
+        self.gate_supervision_enabled = bool(self.mvp_temporal_gate_cfg.get('gate_supervision_enabled', False))
+        self.enable_clean_open_loss = bool(self.mvp_temporal_gate_cfg.get('enable_clean_open_loss', True))
+        self.corruption_probs = self.mvp_temporal_gate_cfg.get(
+            'corruption_probs', dict(clean=1.0, c_full=0.0, c_tail=0.0))
+        self.stale_offsets = self.mvp_temporal_gate_cfg.get('stale_offsets', [4])
+        self.corruption_onset = int(self.mvp_temporal_gate_cfg.get('corruption_onset', 1))
+        self.c_tail_keep_recent = int(self.mvp_temporal_gate_cfg.get('c_tail_keep_recent', 1))
+        self.clean_validation_only = bool(self.mvp_temporal_gate_cfg.get('clean_validation_only', False))
+        self.contradiction_suite_enabled = bool(self.mvp_temporal_gate_cfg.get('run_contradiction_suite', False))
+        self.eval_corruption_cfg = self.mvp_temporal_gate_cfg.get('eval_corruption_cfg', {})
+        self.corruption_trained_no_gate_baseline = bool(
+            self.mvp_temporal_gate_cfg.get('corruption_trained_no_gate_baseline', False))
+        self.freeze_stage = self.mvp_temporal_gate_cfg.get('freeze_stage', None)
+        self.unfreeze_stage = self.mvp_temporal_gate_cfg.get('unfreeze_stage', None)
+        self._dump_alpha_per_frame = bool(self.mvp_temporal_gate_cfg.get('dump_alpha_per_frame', False))
+
+        # Baseline parity guard: corruption-trained no-gate runs must never
+        # keep temporal gate forward accidentally enabled.
+        self._enforce_no_gate_baseline_runtime()
 
         # the track query propagation module, using relative pose
         c_dim = 7 # quaternion for rotation (4) + translation (3)
@@ -245,7 +270,7 @@ class MapTracker(BaseMapper):
                     trans_cls_loss += trans_score
 
                     # backward trans loss
-                    pose_matrix_inv = torch.inverse(trans_matrix).float()[:3]
+                    pose_matrix_inv = torch.inverse(trans_matrix.cpu()).cuda().float()[:3]
                     rot_mat_inv = pose_matrix_inv[:, :3].cpu().numpy()
 
                     rot_inv = R.from_matrix(rot_mat_inv)
@@ -276,6 +301,7 @@ class MapTracker(BaseMapper):
                 'b_trans': back_trans_loss,
             }
             return trans_loss_dict
+        return None
     
     def add_noise_to_pose(self, rot, trans):
         rot_euler = rot.as_euler('zxy')
@@ -339,7 +365,307 @@ class MapTracker(BaseMapper):
             all_history_coord.append(history_coord)
         
         return all_history_curr2prev, all_history_prev2curr, all_history_coord
-        
+
+    def _sample_corruption_mode(self):
+        probs = {
+            'clean': float(self.corruption_probs.get('clean', 0.0)),
+            'c_full': float(self.corruption_probs.get('c_full', 0.0)),
+            'c_tail': float(self.corruption_probs.get('c_tail', 0.0)),
+        }
+        total = sum(max(v, 0.0) for v in probs.values())
+        if total <= 0:
+            return 'clean'
+        r = random.random() * total
+        cdf = 0.0
+        for mode in ['clean', 'c_full', 'c_tail']:
+            cdf += max(probs[mode], 0.0)
+            if r <= cdf:
+                return mode
+        return 'clean'
+
+    def _resolve_stale_offset(self):
+        if isinstance(self.stale_offsets, (list, tuple)) and len(self.stale_offsets) > 0:
+            return int(random.choice(self.stale_offsets))
+        return int(self.stale_offsets) if isinstance(self.stale_offsets, (int, float)) else 4
+
+    def _inject_memory_corruption_meta(self, img_metas, corruption_mode, stale_offset):
+        for meta in img_metas:
+            meta['memory_corruption_mode'] = corruption_mode
+            meta['memory_stale_offset'] = int(stale_offset)
+            meta['memory_c_tail_keep_recent'] = self.c_tail_keep_recent
+            meta['memory_corruption_onset'] = self.corruption_onset
+
+    @staticmethod
+    def _normalize_corruption_mode(mode):
+        mode = str(mode).lower()
+        if mode not in ['clean', 'c_full', 'c_tail']:
+            return 'clean'
+        return mode
+
+    def _resolve_eval_memory_corruption_cfg(self):
+        """
+        Resolve deterministic evaluation-time memory corruption control.
+        Priority:
+          1) mvp_temporal_gate_cfg.eval_corruption_cfg (if present)
+          2) fallback clean defaults (preserve existing clean eval behavior)
+        """
+        cfg = self.eval_corruption_cfg if isinstance(self.eval_corruption_cfg, dict) else {}
+        mode = self._normalize_corruption_mode(cfg.get('memory_corruption_mode', 'clean'))
+        stale_offset = int(cfg.get('memory_stale_offset', 4))
+        c_tail_keep_recent = int(cfg.get('memory_c_tail_keep_recent', self.c_tail_keep_recent))
+        corruption_onset = int(cfg.get('memory_corruption_onset', self.corruption_onset))
+        return dict(
+            memory_corruption_mode=mode,
+            memory_stale_offset=max(0, stale_offset),
+            memory_c_tail_keep_recent=max(0, c_tail_keep_recent),
+            memory_corruption_onset=max(0, corruption_onset),
+        )
+
+    def _inject_eval_memory_corruption_meta(self, img_metas):
+        cfg = self._resolve_eval_memory_corruption_cfg()
+        for meta in img_metas:
+            meta['memory_corruption_mode'] = cfg['memory_corruption_mode']
+            meta['memory_stale_offset'] = cfg['memory_stale_offset']
+            meta['memory_c_tail_keep_recent'] = cfg['memory_c_tail_keep_recent']
+            meta['memory_corruption_onset'] = cfg['memory_corruption_onset']
+
+    def _iter_decoder_temporal_gates(self):
+        """Yield temporal-gate modules wired into decoder memory path."""
+        decoder = getattr(getattr(self.head, 'transformer', None), 'decoder', None)
+        if decoder is None:
+            return
+        layers = getattr(decoder, 'layers', None)
+        if layers is None:
+            return
+        for layer in layers:
+            temporal_gate = getattr(layer, 'temporal_gate', None)
+            if temporal_gate is not None:
+                yield temporal_gate
+
+    def _enforce_no_gate_baseline_runtime(self):
+        """Force-disable and verify temporal-gate forward in no-gate baseline."""
+        if not self.corruption_trained_no_gate_baseline:
+            return
+
+        temporal_gates = list(self._iter_decoder_temporal_gates())
+        assert len(temporal_gates) > 0, (
+            'corruption_trained_no_gate_baseline=True but no decoder temporal_gate '
+            'modules were found in the current model graph.')
+
+        for gate in temporal_gates:
+            gate.enabled = False
+
+        assert all((not gate.enabled) for gate in temporal_gates), (
+            'No-gate baseline parity check failed: at least one temporal_gate '
+            'remains enabled.')
+
+    def _compute_gate_supervision(self, memory_bank, device):
+        zero = torch.zeros((1,), device=device).squeeze(0)
+        out = {
+            'gate_loss': zero,
+            'L_close': zero,
+            'L_open': zero,
+            'L_clean': zero,
+            'alpha_mean_affected': zero,
+            'alpha_mean_preserved_recent': zero,
+            'alpha_mean_clean_recent': zero,
+            'affected_batch_fraction': zero,
+            'eligible_slot_fraction': zero,
+            'historical_path_strength_ratio_clean': zero,
+        }
+
+        if memory_bank is None or not hasattr(memory_bank, 'batch_alpha_soft_dict'):
+            return out
+
+        affected_vals, preserved_vals, clean_vals = [], [], []
+        close_terms, open_terms, clean_terms = [], [], []
+        affected_non_empty = 0
+        clean_ratio_vals = []
+        eligible_slots = 0.0
+        valid_slots = 0.0
+        total_batches = max(len(memory_bank.batch_alpha_soft_dict), 1)
+
+        for b_i, alpha_full in memory_bank.batch_alpha_soft_dict.items():
+            valid_track_list = getattr(memory_bank, 'valid_track_idx', None)
+            if valid_track_list is None or b_i >= len(valid_track_list):
+                continue
+            valid_track_idx = valid_track_list[b_i]
+            if valid_track_idx is None or len(valid_track_idx) == 0:
+                continue
+
+            valid_track_idx = valid_track_idx.to(alpha_full.device)
+            T = alpha_full.shape[1] if alpha_full.ndim == 2 else 0
+            if T == 0:
+                continue
+
+            corrupt = memory_bank.batch_slot_corrupt_mask_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            eligible = memory_bank.batch_slot_corrupt_eligible_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            valid_mem = memory_bank.batch_valid_mem_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            age_rank = memory_bank.batch_age_rank_norm_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            mode = memory_bank.batch_mem_corrupt_mode_dict.get(b_i, 'clean')
+
+            alpha_valid = alpha_full[valid_track_idx]
+            affected = eligible & corrupt
+            eligible_slots += float(eligible.sum().item())
+            valid_slots += float(valid_mem.sum().item())
+
+            if affected.any():
+                affected_non_empty += 1
+                a = alpha_valid[affected]
+                affected_vals.append(a)
+                close_terms.append(F.binary_cross_entropy(a, torch.zeros_like(a)))
+
+            recency_ref = age_rank.max(dim=1, keepdim=True).values
+            preserved_recent = valid_mem & (~corrupt) & (age_rank >= recency_ref)
+            if preserved_recent.any():
+                p = alpha_valid[preserved_recent]
+                preserved_vals.append(p)
+                open_terms.append(F.binary_cross_entropy(p, torch.ones_like(p)))
+
+            if str(mode).lower() == 'clean':
+                clean_recent = valid_mem & (age_rank >= recency_ref)
+                if clean_recent.any():
+                    c = alpha_valid[clean_recent]
+                    clean_vals.append(c)
+                    if self.enable_clean_open_loss:
+                        clean_terms.append(F.binary_cross_entropy(c, torch.ones_like(c)))
+
+                if hasattr(memory_bank, 'batch_v_mem_soft_dict') and b_i in memory_bank.batch_v_mem_soft_dict:
+                    v_soft = memory_bank.batch_v_mem_soft_dict[b_i]
+                    v_clean = memory_bank.batch_mem_clean_embeds_dict[b_i][:, valid_track_idx, :]
+                    denom = v_clean.abs().mean().clamp(min=1e-6)
+                    clean_ratio_vals.append((v_soft.abs().mean() / denom))
+
+        lambda_close = float(self.gate_loss_weights.get('lambda_close', 1.0))
+        lambda_open = float(self.gate_loss_weights.get('lambda_open', 0.5))
+        lambda_clean = float(self.gate_loss_weights.get('lambda_clean', 0.1))
+
+        l_close = torch.stack(close_terms).mean() if close_terms else zero
+        l_open = torch.stack(open_terms).mean() if open_terms else zero
+        l_clean = torch.stack(clean_terms).mean() if clean_terms else zero
+        gate_loss = lambda_close * l_close + lambda_open * l_open + lambda_clean * l_clean
+
+        out.update({
+            'gate_loss': gate_loss,
+            'L_close': l_close,
+            'L_open': l_open,
+            'L_clean': l_clean,
+            'alpha_mean_affected': torch.cat(affected_vals).mean() if affected_vals else zero,
+            'alpha_mean_preserved_recent': torch.cat(preserved_vals).mean() if preserved_vals else zero,
+            'alpha_mean_clean_recent': torch.cat(clean_vals).mean() if clean_vals else zero,
+            'affected_batch_fraction': zero + float(affected_non_empty) / float(total_batches),
+            'eligible_slot_fraction': zero + (eligible_slots / max(valid_slots, 1.0)),
+            'historical_path_strength_ratio_clean': (
+                torch.stack(clean_ratio_vals).mean() if clean_ratio_vals else zero),
+        })
+
+        return out
+
+    def _sync_memory_bank_track_metadata(self, memory_bank):
+        if memory_bank is None:
+            return
+        memory_bank.batch_tracked_query_len = {
+            b_i: int(track_len) for b_i, track_len in self.tracked_query_length.items()
+        }
+
+    def _set_inference_tracked_query_length(self, track_query_info):
+        self.tracked_query_length = {}
+        if track_query_info is None:
+            return
+
+        for b_i, track_info in enumerate(track_query_info):
+            track_embeds = track_info.get('track_query_hs_embeds', None)
+            track_len = 0 if track_embeds is None else track_embeds.shape[0]
+            self.tracked_query_length[b_i] = int(track_len)
+
+    def _compute_inference_alpha_stats(self, memory_bank, device):
+        zero = torch.zeros((1,), device=device).squeeze(0)
+        out = {
+            'alpha_mean_affected': zero,
+            'alpha_mean_preserved_recent': zero,
+            'alpha_mean_clean_recent': zero,
+        }
+        if memory_bank is None or not hasattr(memory_bank, 'batch_alpha_soft_dict'):
+            return out
+
+        affected_vals, preserved_vals, clean_vals = [], [], []
+        for b_i, alpha_full in memory_bank.batch_alpha_soft_dict.items():
+            valid_track_list = getattr(memory_bank, 'valid_track_idx', None)
+            if valid_track_list is None or b_i >= len(valid_track_list):
+                continue
+            valid_track_idx = valid_track_list[b_i]
+            if valid_track_idx is None or len(valid_track_idx) == 0:
+                continue
+            valid_track_idx = valid_track_idx.to(alpha_full.device)
+
+            corrupt = memory_bank.batch_slot_corrupt_mask_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            eligible = memory_bank.batch_slot_corrupt_eligible_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            valid_mem = memory_bank.batch_valid_mem_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            age_rank = memory_bank.batch_age_rank_norm_dict[b_i].to(alpha_full.device)[valid_track_idx]
+            mode = str(memory_bank.batch_mem_corrupt_mode_dict.get(b_i, 'clean')).lower()
+            alpha_valid = alpha_full[valid_track_idx]
+
+            affected = eligible & corrupt
+            if affected.any():
+                affected_vals.append(alpha_valid[affected])
+
+            recency_ref = age_rank.max(dim=1, keepdim=True).values
+            preserved_recent = valid_mem & (~corrupt) & (age_rank >= recency_ref)
+            if preserved_recent.any():
+                preserved_vals.append(alpha_valid[preserved_recent])
+
+            if mode == 'clean':
+                clean_recent = valid_mem & (age_rank >= recency_ref)
+                if clean_recent.any():
+                    clean_vals.append(alpha_valid[clean_recent])
+
+        out['alpha_mean_affected'] = torch.cat(affected_vals).mean() if affected_vals else zero
+        out['alpha_mean_preserved_recent'] = torch.cat(preserved_vals).mean() if preserved_vals else zero
+        out['alpha_mean_clean_recent'] = torch.cat(clean_vals).mean() if clean_vals else zero
+        return out
+
+    def _collect_alpha_frame_data(self, memory_bank, scene_name, local_idx):
+        """Collect per-slot alpha data for one inference frame.
+
+        Returns a CPU-resident dict suitable for pickling, or None if no data.
+        Keys:
+          scene_name, local_idx,
+          alpha       [N_valid_tracks, T_mem]  float32
+          corrupt     [N_valid_tracks, T_mem]  bool
+          eligible    [N_valid_tracks, T_mem]  bool
+          valid_mem   [N_valid_tracks, T_mem]  bool
+          age_rank    [N_valid_tracks, T_mem]  float32
+          mode        str
+        """
+        if memory_bank is None or not hasattr(memory_bank, 'batch_alpha_soft_dict'):
+            return None
+        results = []
+        for b_i, alpha_full in memory_bank.batch_alpha_soft_dict.items():
+            valid_track_list = getattr(memory_bank, 'valid_track_idx', None)
+            if valid_track_list is None or b_i >= len(valid_track_list):
+                continue
+            valid_track_idx = valid_track_list[b_i]
+            if valid_track_idx is None or len(valid_track_idx) == 0:
+                continue
+            dev = alpha_full.device
+            valid_track_idx = valid_track_idx.to(dev)
+            corrupt = memory_bank.batch_slot_corrupt_mask_dict[b_i].to(dev)[valid_track_idx]
+            eligible = memory_bank.batch_slot_corrupt_eligible_dict[b_i].to(dev)[valid_track_idx]
+            valid_mem = memory_bank.batch_valid_mem_dict[b_i].to(dev)[valid_track_idx]
+            age_rank = memory_bank.batch_age_rank_norm_dict[b_i].to(dev)[valid_track_idx]
+            mode = str(memory_bank.batch_mem_corrupt_mode_dict.get(b_i, 'clean')).lower()
+            alpha_valid = alpha_full[valid_track_idx]
+            results.append({
+                'scene_name': scene_name,
+                'local_idx': int(local_idx),
+                'alpha': alpha_valid.cpu().float().numpy(),
+                'corrupt': corrupt.cpu().numpy(),
+                'eligible': eligible.cpu().numpy(),
+                'valid_mem': valid_mem.cpu().numpy(),
+                'age_rank': age_rank.cpu().float().numpy(),
+                'mode': mode,
+            })
+        return results[0] if len(results) == 1 else (results if results else None)
 
     def forward_train(self, img, vectors, semantic_mask, points=None, img_metas=None, all_prev_data=None,
                       all_local2global_info=None, **kwargs):
@@ -364,7 +690,20 @@ class MapTracker(BaseMapper):
         bs = img.shape[0]
 
         _use_memory = self.use_memory and self.num_iter > self.mem_warmup_iters
-        
+
+        # Re-apply guard each train step so downstream mutations cannot
+        # silently re-enable gate forward during baseline runs.
+        self._enforce_no_gate_baseline_runtime()
+
+        clip_corruption_mode = 'clean' if self.clean_validation_only else self._sample_corruption_mode()
+        if self.corruption_trained_no_gate_baseline:
+            clip_corruption_mode = self._sample_corruption_mode()
+        clip_stale_offset = self._resolve_stale_offset()
+        if _use_memory:
+            # Keep stale offset within currently available train-time memory depth.
+            # This avoids silent no-op corruption when offset exceeds mem_len.
+            clip_stale_offset = min(int(clip_stale_offset), max(int(self.mem_len) - 1, 0))
+
         if all_prev_data is not None:
             num_prev_frames = len(all_prev_data)        
             all_gts_prev, all_img_prev, all_img_metas_prev, all_semantic_mask_prev  = [], [], [], []
@@ -372,6 +711,7 @@ class MapTracker(BaseMapper):
                 gts_prev, img_prev, img_metas_prev, valid_idx_prev, _ = self.batch_data(
                     prev_data['vectors'], prev_data['img'], prev_data['img_metas'], img.device      
                 )
+                self._inject_memory_corruption_meta(img_metas_prev, clip_corruption_mode, clip_stale_offset)
                 all_gts_prev.append(gts_prev)
                 all_img_prev.append(img_prev)
                 all_img_metas_prev.append(img_metas_prev)
@@ -386,9 +726,12 @@ class MapTracker(BaseMapper):
         else:
             backprop_backbone_ids = [num_prev_frames, ] # only the last frame trains the backbone (all other settings)
 
+        self._inject_memory_corruption_meta(img_metas, clip_corruption_mode, clip_stale_offset)
+
         track_query_info = None
         all_loss_dict_prev = []
         all_trans_loss = []
+        all_gate_losses = []
         all_outputs_prev = []
 
         self.tracked_query_length = {}
@@ -467,6 +810,7 @@ class MapTracker(BaseMapper):
                     memory_bank = None
                 else:
                     memory_bank = self.memory_bank if _use_memory else None
+                    self._sync_memory_bank_track_metadata(memory_bank)
                 # 1). Compute the loss for prev frame
                 # 2). Get the matching results for computing the track query to next frame
                 loss_dict_prev, outputs_prev, prev_inds_list, prev_gt_inds_list, prev_matched_reg_cost, \
@@ -479,6 +823,11 @@ class MapTracker(BaseMapper):
                                         return_loss=True,
                                         return_matching=True)
                 all_outputs_prev.append(outputs_prev)
+
+                if t > 0 and _use_memory and self.gate_supervision_enabled and \
+                        (not self.corruption_trained_no_gate_baseline):
+                    frame_gate_metrics = self._compute_gate_supervision(self.memory_bank, bev_feats.device)
+                    all_gate_losses.append(frame_gate_metrics['gate_loss'])
 
                 if t > 0:
                     all_trans_loss.append(trans_loss_dict)
@@ -537,6 +886,7 @@ class MapTracker(BaseMapper):
         
         if not self.skip_vector_head:
             memory_bank = self.memory_bank if _use_memory else None
+            self._sync_memory_bank_track_metadata(memory_bank)
             # 3. run the head again and compute the loss for the second frame
             preds_list, loss_dict, det_match_idxs, det_match_gt_idxs, gt_list = self.head(
                 bev_features=bev_feats, 
@@ -564,7 +914,15 @@ class MapTracker(BaseMapper):
         for trans_loss_dict_t in all_trans_loss:
             trans_loss_t = trans_loss_dict_t['f_trans'] + trans_loss_dict_t['b_trans']
             loss += trans_loss_t
-        
+
+        gate_metrics = self._compute_gate_supervision(self.memory_bank if _use_memory else None, bev_feats.device)
+        gate_loss_active = self.gate_supervision_enabled and _use_memory and (not self.corruption_trained_no_gate_baseline)
+        clip_gate_loss = gate_metrics['gate_loss'].new_zeros(())
+        if gate_loss_active:
+            all_gate_losses.append(gate_metrics['gate_loss'])
+            clip_gate_loss = torch.stack(all_gate_losses).mean()
+            loss += clip_gate_loss
+
         # update the log
         log_vars = {k: v.item() for k, v in loss_dict.items()}
 
@@ -578,7 +936,24 @@ class MapTracker(BaseMapper):
         for t, trans_loss_dict_t in enumerate(all_trans_loss):
             log_vars_t = {k+'_t{}'.format(t): v.item() for k, v in trans_loss_dict_t.items()}
             log_vars.update(log_vars_t)
-        
+
+        gate_log = {
+            'gate_loss': clip_gate_loss.item(),
+            'gate_loss_final_frame': gate_metrics['gate_loss'].item(),
+            'L_close': gate_metrics['L_close'].item(),
+            'L_open': gate_metrics['L_open'].item(),
+            'L_clean': gate_metrics['L_clean'].item(),
+            'alpha_mean_affected': gate_metrics['alpha_mean_affected'].item(),
+            'alpha_mean_preserved_recent': gate_metrics['alpha_mean_preserved_recent'].item(),
+            'alpha_mean_clean_recent': gate_metrics['alpha_mean_clean_recent'].item(),
+            'affected_batch_fraction': gate_metrics['affected_batch_fraction'].item(),
+            'eligible_slot_fraction': gate_metrics['eligible_slot_fraction'].item(),
+            'historical_path_strength_ratio_clean': gate_metrics['historical_path_strength_ratio_clean'].item(),
+            'clip_corruption_mode_id': float({'clean': 0, 'c_full': 1, 'c_tail': 2}.get(str(clip_corruption_mode).lower(), -1)),
+            'clip_stale_offset': float(clip_stale_offset),
+        }
+        log_vars.update(gate_log)
+
         log_vars.update({'total': loss.item()})
         num_sample = img.size(0)
         return loss, log_vars, num_sample
@@ -598,6 +973,9 @@ class MapTracker(BaseMapper):
         scene_name, local_idx, seq_length  = seq_info[0]
         first_frame = (local_idx == 0)
         img_metas[0]['local_idx'] = local_idx
+        # Deterministic eval-time control for contradiction-suite / forced
+        # corruption conditions. Default remains clean if unset.
+        self._inject_eval_memory_corruption_meta(img_metas)
     
         if first_frame:
             if self.use_memory:
@@ -606,6 +984,7 @@ class MapTracker(BaseMapper):
                 self.memory_bank.init_memory(bs=1)
             self.history_bev_feats_all = []
             self.history_img_metas_all = []
+            self.tracked_query_length = {}
         
         if self.use_memory:
             self.memory_bank.curr_t = local_idx
@@ -634,6 +1013,7 @@ class MapTracker(BaseMapper):
         else:
             # Using the saved prev-frame output to prepare the track query inputs
             track_query_info = self.head.get_track_info(scene_name, local_idx)
+            self._set_inference_tracked_query_length(track_query_info)
             # Transform prev-frame feature & pts to curr frame using the relative pose
             self.temporal_propagate(bev_feats, img_metas, all_history_curr2prev, 
                 all_history_prev2curr, self.use_memory, track_query_info)
@@ -641,10 +1021,22 @@ class MapTracker(BaseMapper):
 
             # Run the vector map decoder with instance-level memory
             memory_bank = self.memory_bank if self.use_memory else None
+            self._sync_memory_bank_track_metadata(memory_bank)
             preds_list = self.head(bev_feats, img_metas=img_metas, 
                         track_query_info=track_query_info, memory_bank=memory_bank,
                         return_loss=False)
             track_dict = self._process_track_query_info(track_query_info)
+
+        alpha_stats = self._compute_inference_alpha_stats(
+            self.memory_bank if self.use_memory else None, bev_feats.device)
+        # Capture per-frame alpha data HERE, before prepare_temporal_propagation
+        # calls update_memory() which mutates valid_track_idx while
+        # batch_slot_corrupt_mask_dict still holds the pre-update shape.
+        alpha_frame_data = None
+        if getattr(self, '_dump_alpha_per_frame', False):
+            alpha_frame_data = self._collect_alpha_frame_data(
+                self.memory_bank if self.use_memory else None,
+                scene_name, local_idx)
             
         if not self.skip_vector_head:
             # take predictions from the last layer
@@ -688,6 +1080,11 @@ class MapTracker(BaseMapper):
             results_list[b_i]['semantic_mask'] = preds_i
             if 'token' not in results_list[b_i]:
                 results_list[b_i]['token'] = tokens[b_i]
+            results_list[b_i]['alpha_stats'] = {
+                k: float(v.item()) for k, v in alpha_stats.items()
+            }
+            if alpha_frame_data is not None:
+                results_list[b_i]['alpha_frame_data'] = alpha_frame_data
 
         return results_list
 
@@ -953,19 +1350,21 @@ class MapTracker(BaseMapper):
     
     def _denorm_lines(self, line_pts):
         """from (0,1) to the BEV space in meters"""
-        line_pts[..., 0] = line_pts[..., 0] * self.roi_size[0] \
-                        - self.roi_size[0] / 2 
-        line_pts[..., 1] = line_pts[..., 1] * self.roi_size[1] \
-                        - self.roi_size[1] / 2 
-        return line_pts
+        out = line_pts.clone()
+        out[..., 0] = out[..., 0] * self.roi_size[0] \
+                    - self.roi_size[0] / 2 
+        out[..., 1] = out[..., 1] * self.roi_size[1] \
+                    - self.roi_size[1] / 2 
+        return out
 
     def _norm_lines(self, line_pts):
         """from the BEV space in meters to (0,1) """
-        line_pts[..., 0] = (line_pts[..., 0] + self.roi_size[0] / 2) \
-                                        / self.roi_size[0] 
-        line_pts[..., 1] = (line_pts[..., 1] + self.roi_size[1] / 2) \
-                                        / self.roi_size[1] 
-        return line_pts
+        out = line_pts.clone()
+        out[..., 0] = (out[..., 0] + self.roi_size[0] / 2) \
+                                    / self.roi_size[0] 
+        out[..., 1] = (out[..., 1] + self.roi_size[1] / 2) \
+                                    / self.roi_size[1] 
+        return out
 
     def _process_track_query_info(self, track_info):
         bs = len(track_info)
